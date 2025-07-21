@@ -18,7 +18,7 @@ const firebaseConfig = {
   measurementId: "G-3D3XJGY0PZ"
 };
 
-// Initialize Firebase
+// Initialize Firebasee
 const app = initializeApp(firebaseConfig);
 
 // Initialize Analytics only on client side
