@@ -11,6 +11,9 @@ import Collections from "@/components/collections"
 import PasswordManager from "@/components/password-manager"
 import EmptyState from "@/components/empty-state"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { db, storage } from "../firebase"
+import { collection, getDocs, addDoc, deleteDoc, updateDoc, doc, serverTimestamp, orderBy, query } from "firebase/firestore"
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
 
 export interface Bookmark {
   id: string
@@ -24,6 +27,11 @@ export interface Bookmark {
   isFavorite: boolean
   isArchived: boolean
   createdAt: Date
+  isCustomImage?: boolean
+  imageFile?: File
+  isVideo?: boolean
+  videoId?: string
+  videoProvider?: 'youtube' | 'twitter' | 'linkedin' | 'vimeo' | 'other'
 }
 
 export interface Password {
@@ -42,6 +50,9 @@ function MindBoxApp() {
   const [categories, setCategories] = useState<string[]>(["YouTube", "Twitter", "Instagram", "LinkedIn"])
   const [collections, setCollections] = useState<string[]>(["General"])
   const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const [isFirebaseLoaded, setIsFirebaseLoaded] = useState(false)
+  const [firebaseError, setFirebaseError] = useState("")
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
 
   useEffect(() => {
     // Show loading screen first
@@ -56,22 +67,167 @@ function MindBoxApp() {
     return () => clearTimeout(loadingTimer)
   }, [])
 
-  const addBookmark = (bookmark: Omit<Bookmark, "id" | "createdAt">) => {
+  // Load bookmarks from Firebase when app starts
+  useEffect(() => {
+    const fetchBookmarks = async () => {
+      try {
+        setIsFirebaseLoaded(false)
+        const bookmarksQuery = query(collection(db, "bookmarks"), orderBy("createdAt", "desc"));
+        const querySnapshot = await getDocs(bookmarksQuery);
+
+        const fetchedBookmarks: Bookmark[] = [];
+        querySnapshot.forEach((doc) => {
+          const data = doc.data();
+          fetchedBookmarks.push({
+            id: doc.id,
+            title: data.title || "Untitled",
+            description: data.description || "",
+            image: data.image || "/placeholder.svg",
+            domain: data.domain || (data.url ? new URL(data.url).hostname : "Local Image"),
+            url: data.url || "",
+            category: data.category || "General",
+            collection: data.collection || "General",
+            isFavorite: data.isFavorite || false,
+            isArchived: data.isArchived || false,
+            createdAt: data.createdAt?.toDate() || new Date(),
+            isCustomImage: data.isCustomImage || false
+          });
+        });
+
+        setBookmarks(fetchedBookmarks);
+        setIsFirebaseLoaded(true);
+      } catch (error) {
+        console.error("Error fetching bookmarks from Firebase:", error);
+        setFirebaseError("Failed to load bookmarks. Please try refreshing the page.");
+        setIsFirebaseLoaded(true);
+      }
+    };
+
+    // Only fetch if not in welcome or loading screen
+    if (!isLoading && !showWelcome) {
+      fetchBookmarks();
+    }
+  }, [isLoading, showWelcome]);
+
+  const addBookmark = async (bookmark: Omit<Bookmark, "id" | "createdAt">) => {
+    try {
+      console.log("Adding bookmark:", bookmark);
+      console.log("Is custom image:", bookmark.isCustomImage);
+      console.log("Has image file:", !!bookmark.imageFile);
+      
+      let imageUrl = bookmark.image;
+      
+      // Handle image upload if it's a custom image
+      if (bookmark.isCustomImage && bookmark.imageFile) {
+        console.log("Starting image upload process");
+        try {
+          const timestamp = Date.now();
+          const fileName = bookmark.imageFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
+          const storageRef = ref(storage, `images/${timestamp}_${fileName}`);
+          
+          console.log("Created storage reference:", storageRef);
+          
+          // Upload the image to Firebase Storage
+          setUploadProgress(0);
+          console.log("Starting upload");
+          const uploadResult = await uploadBytes(storageRef, bookmark.imageFile);
+          console.log("Upload complete:", uploadResult);
+          setUploadProgress(50);
+          
+          // Get the download URL
+          console.log("Getting download URL");
+          imageUrl = await getDownloadURL(uploadResult.ref);
+          console.log("Download URL:", imageUrl);
+          setUploadProgress(100);
+          
+          // Reset progress after a delay
+          setTimeout(() => setUploadProgress(null), 1000);
+        } catch (uploadError: any) {
+          console.error("Error during image upload:", uploadError);
+          setUploadProgress(null);
+          throw new Error(`Image upload failed: ${uploadError.message}`);
+        }
+      }
+      
+      console.log("Preparing bookmark data with image:", imageUrl);
+      
+      // Save to Firebase - prepare minimal data object
+      const bookmarkData = {
+        title: bookmark.title || "Untitled",
+        description: bookmark.description?.split(" ").slice(0, 15).join(" ") + 
+                    (bookmark.description?.split(" ").length > 15 ? "..." : "") || "Image bookmark",
+        image: imageUrl,
+        url: bookmark.url || "",
+        domain: bookmark.domain || "Local Image",
+        category: bookmark.category || "Images",
+        collection: bookmark.collection || "General",
+        isFavorite: bookmark.isFavorite || false,
+        isArchived: bookmark.isArchived || false,
+        isCustomImage: bookmark.isCustomImage || false,
+        createdAt: serverTimestamp()
+      };
+      
+      console.log("Saving to Firestore:", bookmarkData);
+      
+      // Add to Firestore
+      const docRef = await addDoc(collection(db, "bookmarks"), bookmarkData);
+      console.log("Document saved with ID:", docRef.id);
+      
+      // Create a new bookmark with ID and current date for local state
     const newBookmark: Bookmark = {
       ...bookmark,
-      id: Date.now().toString(),
+        id: docRef.id, // Use Firestore ID
+        image: imageUrl, // Use uploaded image URL if applicable
       createdAt: new Date(),
+      };
+      
+      // Update local state
+      setBookmarks((prev) => [newBookmark, ...prev]);
+      console.log("Local bookmark state updated");
+      
+      setActiveTab("home");
+    } catch (error: any) {
+      console.error("Error adding bookmark to Firebase:", error);
+      alert(`Error saving bookmark: ${error.message}`);
     }
-    setBookmarks((prev) => [newBookmark, ...prev])
-    setActiveTab("home")
-  }
+  };
 
-  const updateBookmark = (id: string, updates: Partial<Bookmark>) => {
+  const updateBookmark = async (id: string, updates: Partial<Bookmark>) => {
+    // Update local state
     setBookmarks((prev) => prev.map((bookmark) => (bookmark.id === id ? { ...bookmark, ...updates } : bookmark)))
+    
+    try {
+      // Update in Firebase - only if the bookmark exists in Firebase
+      const docRef = doc(db, "bookmarks", id);
+      
+      // Prepare updates for Firebase - don't include special properties
+      const { imageFile, ...updateData } = updates;
+      
+      // If updating description, ensure we only store what's needed
+      if (updateData.description) {
+        updateData.description = updateData.description.split(" ").slice(0, 15).join(" ") + 
+                              (updateData.description.split(" ").length > 15 ? "..." : "");
+      }
+      
+      await updateDoc(docRef, updateData);
+    } catch (error) {
+      console.error(`Error updating bookmark in Firebase: ${error}`);
+      // Silently fail - the local update will still work
+    }
   }
 
-  const deleteBookmark = (id: string) => {
+  const deleteBookmark = async (id: string) => {
+    // Update local state
     setBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== id))
+
+    try {
+      // Delete from Firebase
+      const docRef = doc(db, "bookmarks", id);
+      await deleteDoc(docRef);
+    } catch (error) {
+      console.error(`Error deleting bookmark from Firebase: ${error}`);
+      // Silently fail - the local deletion will still work
+    }
   }
 
   const reorderBookmarks = (newOrder: Bookmark[]) => {
@@ -206,8 +362,14 @@ function MindBoxApp() {
           )}
         </div>
 
-        {/* Main Content */}
-        <div className="pb-24">
+        {/* Main Content with padding bottom for fixed navigation */}
+        <div className="pb-24"> {/* Added padding bottom to make space for the fixed nav bar */}
+          {firebaseError && (
+            <div className="p-4 bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-300 rounded-lg mx-4 my-2 text-sm">
+              {firebaseError}
+            </div>
+          )}
+
           {activeTab === "add" && (
             <AddBookmark
               onAddBookmark={addBookmark}
@@ -256,48 +418,59 @@ function MindBoxApp() {
           )}
         </div>
 
-        {/* Fixed Bottom Navigation - Simplified */}
-        <div className="fixed bottom-0 left-1/2 transform -translate-x-1/2 w-full max-w-md z-50">
-          <div className="bg-white/95 dark:bg-gray-900/95 backdrop-blur-xl border-t border-gray-200/50 dark:border-gray-700/50 px-4 py-3 shadow-lg">
-            <div className="flex justify-around items-center">
+        {/* Floating Bottom Navigation */}
+        <div className="fixed bottom-6 left-0 right-0 z-30 mx-auto max-w-[250px]">
+          <div className="flex justify-around items-center bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl rounded-full shadow-lg border border-gray-200/50 dark:border-gray-700/50 px-2 py-2">
               <button
                 onClick={() => setActiveTab("home")}
-                className={`flex flex-col items-center gap-1 p-3 rounded-xl transition-all duration-200 ${
+              className={`flex flex-col items-center justify-center w-12 h-12 rounded-full transition-all duration-200 ${
                   activeTab === "home"
                     ? "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
                     : "text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
                 }`}
               >
                 <Home className="w-5 h-5" />
-                <span className="text-xs font-medium">Home</span>
               </button>
 
               <button
                 onClick={() => setActiveTab("add")}
-                className={`flex flex-col items-center gap-1 p-3 rounded-xl transition-all duration-200 ${
+              className={`flex flex-col items-center justify-center w-12 h-12 rounded-full transition-all duration-200 ${
                   activeTab === "add"
                     ? "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
                     : "text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
                 }`}
               >
                 <Plus className="w-5 h-5" />
-                <span className="text-xs font-medium">Add</span>
               </button>
 
               <button
                 onClick={() => setActiveTab("favorites")}
-                className={`flex flex-col items-center gap-1 p-3 rounded-xl transition-all duration-200 ${
+              className={`flex flex-col items-center justify-center w-12 h-12 rounded-full transition-all duration-200 ${
                   activeTab === "favorites"
                     ? "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
                     : "text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
                 }`}
               >
                 <Star className="w-5 h-5" />
-                <span className="text-xs font-medium">Favorites</span>
               </button>
-            </div>
           </div>
         </div>
+
+        {/* Show upload progress if applicable */}
+        {uploadProgress !== null && (
+          <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/50">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg w-80 text-center">
+              <div className="mb-4">Uploading Image</div>
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+                <div 
+                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" 
+                  style={{ width: `${uploadProgress}%` }}
+                ></div>
+              </div>
+              <div className="mt-2 text-sm text-gray-500">{uploadProgress}%</div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -305,7 +478,7 @@ function MindBoxApp() {
 
 export default function App() {
   return (
-    <ThemeProvider defaultTheme="light" storageKey="mindbox-ui-theme">
+    <ThemeProvider defaultTheme="dark" storageKey="mindbox-ui-theme">
       <MindBoxApp />
     </ThemeProvider>
   )
