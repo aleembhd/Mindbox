@@ -1,0 +1,25 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Needed for Firebase
+[functions]
+  included_files = [
+    ".env",
+    "firebase.js",
+    "components/video-player.tsx",
+    "components/bookmark-card.tsx"
+  ]
+  
+[build.environment]
+  NEXT_USE_NETLIFY_EDGE = "true"
+  NODE_VERSION = "18"
+  
+# Handle redirects and SPA fallbacks
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200 
