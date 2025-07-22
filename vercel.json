@@ -1,6 +1,10 @@
 {
-  "version": 2,
-  "buildCommand": "pnpm install --no-frozen-lockfile && pnpm build",
-  "installCommand": "pnpm install --no-frozen-lockfile",
-  "framework": "nextjs"
-} 
+  "buildCommand": "npm run build",
+  "installCommand": "npm install --legacy-peer-deps",
+  "framework": "nextjs",
+  "functions": {
+    "app/**/*.{js,ts,jsx,tsx}": {
+      "runtime": "nodejs18.x"
+    }
+  }
+}
