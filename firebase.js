@@ -24,7 +24,11 @@ const app = initializeApp(firebaseConfig);
 // Initialize Analytics only on client side
 let analytics = null;
 if (typeof window !== 'undefined') {
-  analytics = getAnalytics(app);
+  try {
+    analytics = getAnalytics(app);
+  } catch (error) {
+    console.warn('Analytics initialization failed:', error);
+  }
 }
 
 // Initialize Firestore
